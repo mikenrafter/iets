@@ -89,14 +89,14 @@ pub(super) fn input_attrs(
 }
 
 /// fetchTree.cc:fetchTree: a pure evaluation refuses an input that is not
-/// locked (a `narHash` for `path` and `tarball`, a `rev` for the rest). The
+/// locked (a `narHash` for `path`, `tarball` and `file`, a `rev` for the rest). The
 /// message names the input the way `Input::to_string` does
 /// (`flakeref::attrs_to_string`); for `git` (fetchTree adds `?shallow=1`) and
 /// what iets cannot show, it is unsupported and classic mode falls back.
 fn check_locked(attrs: &Attrs, pos: Pos) -> EvalResult<()> {
     let ty = str_attr(attrs, "type").unwrap_or("");
     let locked = match ty {
-        "path" | "tarball" => attrs.contains_key("narHash"),
+        "path" | "tarball" | "file" => attrs.contains_key("narHash"),
         _ => attrs.contains_key("rev"),
     };
     if locked {
@@ -105,7 +105,9 @@ fn check_locked(attrs: &Attrs, pos: Pos) -> EvalResult<()> {
     // fetchTree.cc only warns on a `narHash`
     let shown = match ty {
         _ if attrs.contains_key("narHash") => None,
-        "path" | "tarball" | "github" | "gitlab" => flakeref::attrs_to_string(attrs.clone()).ok(),
+        "path" | "tarball" | "file" | "github" | "gitlab" => {
+            flakeref::attrs_to_string(attrs.clone()).ok()
+        }
         _ => None,
     };
     match shown {
@@ -199,7 +201,7 @@ pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
                 counter: None,
             }
         }
-        "github" | "gitlab" | "sourcehut" | "git" | "tarball" | "hg" => {
+        "github" | "gitlab" | "sourcehut" | "git" | "tarball" | "file" | "hg" => {
             source::tree(ev, &SourceRef::Locked(attrs), pos)?
         }
         other => bail!(

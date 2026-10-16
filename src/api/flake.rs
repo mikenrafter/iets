@@ -104,7 +104,10 @@ impl Info {
                 .collect();
             match (locked["type"].as_str(), locked["narHash"].as_str()) {
                 (Some("path"), _) => {}
-                (Some("github" | "gitlab" | "sourcehut" | "tarball" | "git" | "hg"), Some(h)) => {
+                (
+                    Some("github" | "gitlab" | "sourcehut" | "tarball" | "file" | "git" | "hg"),
+                    Some(h),
+                ) => {
                     let h = source::parse_nar_hash(h)
                         .map_err(|e| Error::Flake(format!("input '{name}': {e}")))?;
                     attrs.insert("narHash".into(), AttrVal::Str(h.to_sri()));

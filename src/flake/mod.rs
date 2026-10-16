@@ -542,6 +542,7 @@ fn check_inputs(
         let decl = ev.force_attrs(a.cell.get(), pos, "while evaluating a flake input")?;
         let mut get = |k: &[u8]| decl.get(ev.sym(k)).map(|x| x.cell.get());
         let (url, follows, sub) = (get(b"url"), get(b"follows"), get(b"inputs"));
+        let flake = get(b"flake");
         let is_ref = url.is_some() || get(b"type").is_some();
         let want = match (follows, url) {
             (Some(_), _) if is_ref => {
@@ -560,7 +561,13 @@ fn check_inputs(
                         .collect(),
                 )
             }
-            (None, Some(u)) => declared_ref(ev, u)?,
+            (None, Some(u)) => {
+                let is_flake = match flake {
+                    Some(f) => ev.force(f)? != Word::FALSE,
+                    None => true,
+                };
+                declared_ref(ev, u, is_flake)?
+            }
             (None, None) => Declared::Unknown,
         };
         if let Some(why) = lock.disagrees(node, &name, &want) {
@@ -577,14 +584,15 @@ fn check_inputs(
     Ok(())
 }
 
-/// A url string as the lock's `original` holds it; a path value or a url
-/// iets cannot parse is not compared.
-fn declared_ref(ev: &mut Evaluator, url: Word) -> EvalResult<Declared> {
+/// A url string as the lock's `original` holds it, parsed as an input whose
+/// `flake` attribute is `is_flake`; a path value or a url iets cannot parse
+/// is not compared.
+fn declared_ref(ev: &mut Evaluator, url: Word, is_flake: bool) -> EvalResult<Declared> {
     let Value::String(s) = ev.force(url)?.view() else {
         return Ok(Declared::Unknown);
     };
     let url = String::from_utf8_lossy(s.bytes).into_owned();
-    let Ok(mut p) = flakeref::parse(&url) else {
+    let Ok(mut p) = flakeref::parse_input(&url, is_flake) else {
         return Ok(Declared::Unknown);
     };
     if !p.dir.is_empty() {

@@ -225,16 +225,31 @@ fn indirect(p: &[&str], shown: &str) -> R<Attrs> {
 const CURL: &str = "url narHash name unpack rev revCount lastModified";
 const GIT_FLAGS: &str = "shallow submodules lfs exportIgnore allRefs verifyCommit";
 
-/// fetchers.cc:Input::fromURL with requireTree.
-fn input_from_url(mut url: Url) -> R<Attrs> {
+/// tarball.cc:hasTarballExtension.
+fn has_tarball_extension(url: &Url) -> bool {
+    let last = url.path.last().map_or("", String::as_str);
+    [
+        ".zip", ".tar", ".tgz", ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst",
+    ]
+    .iter()
+    .any(|e| last.ends_with(e))
+}
+
+/// fetchers.cc:Input::fromURL. `require_tree` is off only for a flake input
+/// declared `flake = false`, where a URL that names no archive is a `file`.
+fn input_from_url(mut url: Url, require_tree: bool) -> R<Attrs> {
     let scheme = url.scheme.clone();
     let (app, transport) = split_scheme(&scheme);
     let mut a = Attrs::new();
     let curl = ["file", "http", "https"].contains(&transport);
     match (app, scheme.as_str()) {
         (None | Some("file" | "tarball"), _) if curl => {
-            // tarball.cc:CurlInputScheme::inputFromURL
-            let ty = ["tarball", "file"][usize::from(app == Some("file"))];
+            // tarball.cc:CurlInputScheme::inputFromURL and isValidURL
+            let file = match app {
+                Some(a) => a == "file",
+                None => !require_tree && !has_tarball_extension(&url),
+            };
+            let ty = ["tarball", "file"][usize::from(file)];
             a.insert("type".into(), st(ty));
             for k in ["narHash", "rev", "revCount", "lastModified"] {
                 a.extend(url.query.get(k).and_then(|v| attr(k.into(), v)));
@@ -408,6 +423,11 @@ pub struct Parsed {
 
 /// flakeref.cc:parseFlakeRefWithFragment without a base directory.
 pub fn parse(s: &str) -> R<Parsed> {
+    parse_input(s, true)
+}
+
+/// [`parse`] for a flake input; `is_flake` is its `flake` attribute.
+pub fn parse_input(s: &str, is_flake: bool) -> R<Parsed> {
     let (loc, frag) = s.split_once('#').unwrap_or((s, ""));
     let id = !loc.starts_with("flake:") && is_indirect(loc);
     let bare = !id && !s.split_once(':').is_some_and(|(sc, _)| is_scheme(sc));
@@ -423,7 +443,7 @@ pub fn parse(s: &str) -> R<Parsed> {
         let mut url = parse_url(s)?;
         let dir = url.query.remove("dir").unwrap_or_default();
         let fragment = mem::take(&mut url.fragment);
-        (input_from_url(url)?, dir, fragment)
+        (input_from_url(url, is_flake)?, dir, fragment)
     };
     Ok(Parsed {
         input,
@@ -556,6 +576,11 @@ mod tests {
             parse_absolute("file+https://x.org/a").unwrap().get("type"),
             Some("file")
         );
+        // `flake = false`: a URL that names no archive is one file
+        let ty = |s, is_flake| parse_input(s, is_flake).unwrap().input["type"].clone();
+        assert_eq!(ty("file:///a/x.nix", false), st("file"));
+        assert_eq!(ty("https://x.org/a.tar.gz", false), st("tarball"));
+        assert_eq!(ty("file:///a/x.nix", true), st("tarball"));
         let p = parse_absolute(&format!("nixpkgs/release/{REV}")).unwrap();
         assert_eq!(
             (p.get("id"), p.get("ref")),

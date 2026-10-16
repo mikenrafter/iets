@@ -231,9 +231,11 @@ So a difference in the file set is an error.
 When no `nix` other than iets itself is on `PATH`, the error says so and
 names the command to run first.
 
-`file` inputs are not supported. A `file` input's store path is the *flat*
-hash of the bytes under the input's name, and the lock's `narHash` does not
-give that, so iets cannot say where the file belongs before it has it.
+**`file`, a tarball that is not unpacked.** Nix copies the one file it
+downloads to the store as a NAR named `source`, so the lock's `narHash`
+names the path before the download, as it does for a tarball. The fetch is
+the tarball's, with the spool kept as one regular file instead of indexed
+as an archive.
 
 ## Remote root flakes
 

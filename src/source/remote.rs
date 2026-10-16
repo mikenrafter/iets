@@ -1,7 +1,7 @@
 //! A locked reference's tree: read from `/nix/store` when it is there, else
 //! from the user-level input store (`crate::treestore`), else substituted by
 //! a daemon if one is reachable, else downloaded into the input store by
-//! iets itself (`github`, `gitlab`, `sourcehut`, `tarball`), else fetched by
+//! iets itself (`github`, `gitlab`, `sourcehut`, `tarball`, `file`), else fetched by
 //! running `nix` once (`git`, `hg`). Only that last step needs a daemon.
 //!
 //! The `narHash` is known before the fetch, so the tree names itself and the
@@ -293,7 +293,7 @@ fn substitute(ev: &mut Evaluator, store_path: &str) -> bool {
 
 /// A remote input's tree must be readable at its store path so `import` reads
 /// exactly what Nix reads. `/nix/store` is used when it has the tree, then the
-/// user-level input store; a tarball-shaped input in neither is downloaded into
+/// user-level input store; an archive or `file` input in neither is downloaded into
 /// that, and reads come out of the spool by offset (`crate::treestore`). A
 /// reachable daemon is asked to substitute first, since a local copy beats a
 /// download. A `git` or `hg` input still goes through Nix's `fetchTree`, which
@@ -323,8 +323,8 @@ pub fn ensure_readable(
             .stat(full.as_bytes(), true, trace::Kind::Directory);
         return Ok(());
     }
-    if is_tarball_type(attrs) {
-        let entry = fetch_tarball(ev, sp, attrs, pos)?;
+    if is_download_type(attrs) {
+        let entry = fetch_download(ev, sp, attrs, pos)?;
         adopt(ev, sp, &entry);
         return Ok(());
     }
@@ -532,16 +532,15 @@ fn nix_conf(s: &Session) -> &config::Config {
         .get_or_init(|| config::Config::read(&[]).unwrap_or_else(|_| config::Config::empty()))
 }
 
-/// The types whose fetch is "download one archive and unpack it"
-/// (github.cc:GitArchiveInputScheme, tarball.cc:TarballInputScheme). `git` and
-/// `hg` are not here: they need a repository, so they still go through nix.
-/// `file` is not either: its store path is the flat hash of the bytes under the
-/// input's name, which the lock's `narHash` does not give, so iets cannot say
-/// where the file belongs before it has it.
-fn is_tarball_type(attrs: &Attrs) -> bool {
+/// The types whose fetch is one download: an archive to unpack
+/// (github.cc:GitArchiveInputScheme, tarball.cc:TarballInputScheme) or one
+/// file (tarball.cc:FileInputScheme, which Nix keeps as a NAR named `source`,
+/// so the lock's `narHash` names it as it names a tree). `git` and `hg` are
+/// not here: they need a repository, so they still go through nix.
+fn is_download_type(attrs: &Attrs) -> bool {
     matches!(
         str_attr(attrs, "type").unwrap_or(""),
-        "github" | "gitlab" | "sourcehut" | "tarball"
+        "github" | "gitlab" | "sourcehut" | "tarball" | "file"
     )
 }
 
@@ -583,13 +582,13 @@ fn access_header(ty: &str, token: &str) -> (String, String) {
 }
 
 /// github.cc:getDownloadUrl and tarball.cc: the URL and headers Nix downloads a
-/// locked archive input from. The `rev` is the 40 hex digits the lock holds.
+/// locked archive or `file` input from. The `rev` is the 40 hex digits the lock holds.
 fn tarball_url(
     cfg: &config::Config,
     attrs: &Attrs,
 ) -> result::Result<(String, Vec<(String, String)>), String> {
     let ty = str_attr(attrs, "type").unwrap_or("");
-    if ty == "tarball" {
+    if ty == "tarball" || ty == "file" {
         let url = str_attr(attrs, "url").ok_or("the lock has no 'url'")?;
         return Ok((url.to_string(), Vec::new()));
     }
@@ -624,13 +623,14 @@ fn tarball_url(
 }
 
 /// Downloads the input's archive into the input store, indexes it like Nix
-/// unpacks it, checks the NAR hash against the lock and keeps the spool. The
+/// unpacks it (a `file` input is the one regular file it downloads), checks
+/// the NAR hash against the lock and keeps the spool. The
 /// archive is streamed: the only copy is the decompressed tar, which the NAR is
 /// written out of once to hash it. A tree whose hash is not the lock's is thrown
 /// away, so a wrong tree is never named, never read and never uploaded. Nothing
 /// is registered anywhere: `remote::plan` sends the NAR out of this spool when a
 /// build needs it, and evaluation needs no store at all.
-fn fetch_tarball(
+fn fetch_download(
     ev: &mut Evaluator,
     sp: &StorePath,
     attrs: &Attrs,
@@ -661,10 +661,17 @@ fn fetch_tarball(
         .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
     let limits = Limits::new(nix_conf(ev.session()))
         .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
-    http::get_decompressed(&url, &headers, limits, &mut spool)
-        .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
-    let tree = spool::Tree::index(spool, limits.max_size)
-        .map_err(|e| fail(format!("iets: cannot unpack input '{name}': {e}")))?;
+    let file = str_attr(attrs, "type") == Some("file");
+    let got = match file {
+        true => http::get(&url, &headers, limits, false, &mut spool),
+        false => http::get_decompressed(&url, &headers, limits, &mut spool),
+    };
+    got.map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
+    let tree = match file {
+        true => spool::Tree::file(spool),
+        false => spool::Tree::index(spool, limits.max_size),
+    }
+    .map_err(|e| fail(format!("iets: cannot unpack input '{name}': {e}")))?;
 
     // the store verifies the tree against the lock's hash and names it by
     // what it hashes to, so a wrong tree is never named, read or uploaded
@@ -677,10 +684,10 @@ fn fetch_tarball(
     )
     .map_err(|e| match e {
         Rejected::Mismatch(got) => {
+            // fetchers.cc:Input::checkLocks
             let msg = format!(
-                "iets: NAR hash mismatch in input '{name}' ({}): expected '{}' \
-                 but the tree iets fetched hashes to '{}'",
-                crate::fetch::http::shown(&url),
+                "NAR hash mismatch in input '{}', expected '{}' but got '{}'",
+                to_url(attrs),
                 expected.to_sri(),
                 got.to_sri()
             );
@@ -1104,11 +1111,11 @@ mod tests {
 
     #[test]
     fn only_the_archive_types_are_fetched_by_iets() {
-        for ty in ["github", "gitlab", "sourcehut", "tarball"] {
-            assert!(is_tarball_type(&attrs(&[("type", ty)])), "{ty}");
+        for ty in ["github", "gitlab", "sourcehut", "tarball", "file"] {
+            assert!(is_download_type(&attrs(&[("type", ty)])), "{ty}");
         }
-        for ty in ["git", "hg", "path", "file"] {
-            assert!(!is_tarball_type(&attrs(&[("type", ty)])), "{ty}");
+        for ty in ["git", "hg", "path"] {
+            assert!(!is_download_type(&attrs(&[("type", ty)])), "{ty}");
         }
     }
 

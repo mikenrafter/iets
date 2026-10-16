@@ -130,6 +130,15 @@ fn nar_hash_of_string(bytes: &[u8]) -> Hash {
     h.finish()
 }
 
+/// A string no earlier run has used.
+fn unique() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("{nanos}-{}", std::process::id())
+}
+
 fn file_nar_hash(bytes: &[u8]) -> String {
     nar_hash_of_string(bytes).to_sri()
 }
@@ -193,11 +202,16 @@ fn a_file_whose_bytes_are_not_the_locked_ones_is_refused_naming_both_hashes() {
     let (d, cache) = scratch("mismatch", b"not what the lock says\n");
     let got = file_nar_hash(b"not what the lock says\n");
     let url = file_url(&d.join("input.nix"));
+    // locked bytes no store holds: a valid store path is used without a
+    // download, so `NAR_HASH`, which a nix on this machine may have, would
+    // never reach the URL
+    let locked = nar_hash_of_string(format!("{}\n", unique()).as_bytes());
+    let want = locked.to_sri();
 
     // fetchTree: Nix says
     // NAR hash mismatch in input '<url>?narHash=...', expected '<lock>' but got '<file>'
     let call = format!(
-        r#"(builtins.fetchTree {{ type = "file"; url = "{url}"; narHash = "{NAR_HASH}"; }}).outPath"#
+        r#"(builtins.fetchTree {{ type = "file"; url = "{url}"; narHash = "{want}"; }}).outPath"#
     );
     let o = eval(&cache, false, &["--raw", "--expr", &call]);
     let err = text(&o.stderr);
@@ -205,35 +219,28 @@ fn a_file_whose_bytes_are_not_the_locked_ones_is_refused_naming_both_hashes() {
     assert!(o.stdout.is_empty(), "{}", text(&o.stdout));
     assert!(err.contains("NAR hash mismatch in input"), "{err}");
     assert!(
-        err.contains(&format!("expected '{NAR_HASH}' but got '{got}'")),
+        err.contains(&format!("expected '{want}' but got '{got}'")),
         "{err}"
     );
 
     // the same bytes behind a flake.lock
-    let f = flake(&d, NAR_HASH);
+    let f = flake(&d, &want);
     let o = eval(&cache, false, &["--raw", &format!("{}#text", f.display())]);
     let err = text(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(o.stdout.is_empty(), "{}", text(&o.stdout));
-    assert!(err.contains(NAR_HASH) && err.contains(&got), "{err}");
+    assert!(err.contains(&want) && err.contains(&got), "{err}");
 
     // nothing was kept under the path the lock names
-    let name = STORE_PATH.rsplit('/').next().unwrap();
-    assert!(!cache.join("inputs").join(name).exists());
+    let sp = treestore::store_path("source", &locked).unwrap();
+    assert!(!cache.join("inputs").join(sp.base_name()).exists());
     fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn a_fetched_file_input_needs_no_network_the_second_time() {
     // bytes no store has yet, so the first run has to download them
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let bytes = format!(
-        "{{ x = 42; nonce = \"{nonce}-{}\"; }}\n",
-        std::process::id()
-    );
+    let bytes = format!("{{ x = 42; nonce = \"{}\"; }}\n", unique());
     let (d, cache) = scratch("offline", bytes.as_bytes());
     let hash = nar_hash_of_string(bytes.as_bytes());
     let want = treestore::store_path("source", &hash)

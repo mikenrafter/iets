@@ -128,8 +128,8 @@ The root tree and `path:` inputs never need this.
    connects on the first missing input and keeps the connection for the rest
    of the evaluation. A `grpc://` store can't substitute, and the download
    decides. When no daemon answers, iets skips this step without a word.
-3. **iets downloads it.** `github`, `gitlab`, `sourcehut` and `tarball`
-   inputs are one download each, into the input store.
+3. **iets downloads it.** `github`, `gitlab`, `sourcehut`, `tarball` and
+   `file` inputs are one download each, into the input store.
 4. **iets asks Nix.** For `git` and `hg`, iets runs
    `nix eval --raw --impure --expr '(builtins.fetchTree <locked
    attrs>).outPath'` and checks that the path Nix reports is the one the
@@ -138,8 +138,13 @@ The root tree and `path:` inputs never need this.
    `iets: input '<name>' is not in the store and nix is not on PATH; fetch
    it with nix (...) first`.
 
-`file` inputs are not supported. Their store path is the flat hash of the
-bytes, which the lock's `narHash` does not give.
+A `file` input is one regular file, not unpacked. Nix stores it as a NAR
+named `source`, so the lock's `narHash` names its store path as it does a
+tarball's. A plain `file:`, `http:` or `https:` URL is a `file` input when
+the input says `flake = false` and the URL does not end in an archive
+extension (`.zip`, `.tar`, `.tgz`, `.tar.gz`, `.tar.xz`, `.tar.bz2`,
+`.tar.zst`); otherwise it is a `tarball`. Bytes whose NAR hash is not the
+lock's are refused with Nix's `NAR hash mismatch in input` and are not kept.
 
 With `IETS_OFFLINE=1`, any download is an error that names the URL. A flake
 whose inputs are all in the input store still evaluates.
