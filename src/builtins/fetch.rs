@@ -201,6 +201,10 @@ pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
                 counter: None,
             }
         }
+        // only impure evaluation gets here without a `narHash` (`check_locked`)
+        "tarball" | "file" if !attrs.contains_key("narHash") => {
+            source::unlocked(ev, &attrs, "source", pos)?
+        }
         "github" | "gitlab" | "sourcehut" | "git" | "tarball" | "file" | "hg" => {
             source::tree(ev, &SourceRef::Locked(attrs), pos)?
         }
@@ -220,17 +224,18 @@ pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
 
 /// fetchTree.cc:fetch for `builtins.fetchTarball`: with a `sha256` the store
 /// path is known before the download, so it is the same fetch as a locked
-/// `tarball` input. Without one it is not, and the call is unsupported.
+/// `tarball` input. Without one, which only impure evaluation allows, it is
+/// an unlocked one (`source::unlocked`). A `sha256` iets cannot parse is
+/// unsupported.
 pub fn fetch_tarball_builtin(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
     purity::unhashed_fetch(ev, "fetchTarball", args[0], pos)?;
-    let FetchArgs {
-        url, sha256, name, ..
-    } = fetch_args(ev, args[0], "fetchTarball", pos)?;
-    let name = name.unwrap_or_else(|| "source".into());
-    let url = match url.strip_prefix("channel:") {
-        Some(c) => format!("https://channels.nixos.org/{c}/nixexprs.tar.xz"),
-        None => url,
-    };
+    let mut a = fetch_args(ev, args[0], "fetchTarball", pos)?;
+    if let Some(c) = a.url.strip_prefix("channel:") {
+        a.url = format!("https://channels.nixos.org/{c}/nixexprs.tar.xz");
+    }
+    let name = a.name.clone().unwrap_or_else(|| "source".into());
+    check_fetch_name(&a, &name, "fetchTarball", pos)?;
+    let FetchArgs { url, sha256, .. } = a;
     if ev.pure() && sha256.is_none() {
         bail!(
             ErrorKind::Eval,
@@ -238,27 +243,39 @@ pub fn fetch_tarball_builtin(ev: &mut Evaluator, args: &[Word], pos: Pos) -> Eva
             "in pure evaluation mode, 'fetchTarball' requires a 'sha256' argument"
         );
     }
-    let Some(hash) = sha256
-        .filter(|h| !h.is_empty())
-        .and_then(|h| Hash::parse_any(&h, Some(HashAlgo::Sha256)).ok())
-    else {
-        ev.trace().mark_uncacheable();
-        bail!(
-            ErrorKind::Unsupported,
-            pos,
-            "builtins.fetchTarball without a sha256 is not supported"
-        );
+    let sp = match sha256 {
+        None => {
+            let attrs = Attrs::from([
+                ("type".into(), AttrVal::Str("tarball".into())),
+                ("url".into(), AttrVal::Str(url)),
+            ]);
+            source::unlocked(ev, &attrs, &name, pos)?.path
+        }
+        Some(sha256) => {
+            let Some(hash) = Some(sha256)
+                .filter(|h| !h.is_empty())
+                .and_then(|h| Hash::parse_any(&h, Some(HashAlgo::Sha256)).ok())
+            else {
+                ev.trace().mark_uncacheable();
+                bail!(
+                    ErrorKind::Unsupported,
+                    pos,
+                    "builtins.fetchTarball with an empty or unreadable sha256 is not supported"
+                );
+            };
+            // not `source::tree`: `fetchTarball` names the entry itself, and the
+            // input store's entry names are what an upload looks up
+            let sp = treestore::store_path(&name, &hash)
+                .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
+            let attrs = Attrs::from([
+                ("type".into(), AttrVal::Str("tarball".into())),
+                ("url".into(), AttrVal::Str(url)),
+                ("narHash".into(), AttrVal::Str(hash.to_sri())),
+            ]);
+            source::ensure_readable(ev, &sp, &hash, &attrs, pos)?;
+            sp
+        }
     };
-    // not `source::tree`: `fetchTarball` names the entry itself, and the
-    // input store's entry names are what an upload looks up
-    let sp = treestore::store_path(&name, &hash)
-        .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
-    let attrs = Attrs::from([
-        ("type".into(), AttrVal::Str("tarball".into())),
-        ("url".into(), AttrVal::Str(url)),
-        ("narHash".into(), AttrVal::Str(hash.to_sri())),
-    ]);
-    source::ensure_readable(ev, &sp, &hash, &attrs, pos)?;
     let full = ev.arena.alloc_bytes(sp.to_full_string().as_bytes());
     let ctx = ev.arena.alloc_slice(&[Ctx::Opaque(full)]);
     Ok(ev.arena.mk_string_static(full, ctx))
@@ -329,23 +346,7 @@ pub fn fetchurl_builtin(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResu
         Some(n) if !n.is_empty() => n.to_string(),
         _ => url_base_name(&a.url).to_string(),
     };
-    if let Err(e) = check_name(&name) {
-        let fix = if a.name.is_some() {
-            "Please change the value for the 'name' attribute passed to 'fetchurl', so that it can create a valid store path."
-        } else if a.attrs {
-            "Please add a valid 'name' attribute to the argument for 'fetchurl', so that it can create a valid store path."
-        } else {
-            // the two spaces are Nix's
-            "Please pass an attribute set with 'url' and 'name' attributes to 'fetchurl',  so that it can create a valid store path."
-        };
-        bail!(
-            ErrorKind::Eval,
-            pos,
-            "invalid store path name when fetching URL '{}': {}. {fix}",
-            a.url,
-            e.0
-        );
-    }
+    check_fetch_name(&a, &name, "fetchurl", pos)?;
     let Some(sha256) = a.sha256 else {
         let kind = if ev.pure() {
             ErrorKind::Eval
@@ -370,6 +371,35 @@ pub fn fetchurl_builtin(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResu
     let full = ev.arena.alloc_bytes(sp.to_full_string().as_bytes());
     let ctx = ev.arena.alloc_slice(&[Ctx::Opaque(full)]);
     Ok(ev.arena.mk_string_static(full, ctx))
+}
+
+/// primops/fetchTree.cc:fetch: the store path name is checked before
+/// anything is fetched.
+fn check_fetch_name(a: &FetchArgs, name: &str, who: &str, pos: Pos) -> EvalResult<()> {
+    let Err(e) = check_name(name) else {
+        return Ok(());
+    };
+    let fix = if a.name.is_some() {
+        format!(
+            "Please change the value for the 'name' attribute passed to '{who}', so that it can create a valid store path."
+        )
+    } else if a.attrs {
+        format!(
+            "Please add a valid 'name' attribute to the argument for '{who}', so that it can create a valid store path."
+        )
+    } else {
+        // the two spaces are Nix's
+        format!(
+            "Please pass an attribute set with 'url' and 'name' attributes to '{who}',  so that it can create a valid store path."
+        )
+    };
+    bail!(
+        ErrorKind::Eval,
+        pos,
+        "invalid store path name when fetching URL '{}': {}. {fix}",
+        a.url,
+        e.0
+    );
 }
 
 /// util.cc:baseNameOf: the last component, past one trailing `/`.

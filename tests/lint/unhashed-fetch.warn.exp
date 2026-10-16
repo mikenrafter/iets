@@ -1,6 +1,6 @@
 warning: [unhashed-fetch] `fetchTarball` is called without a hash, narHash or rev: the result is not reproducible
   at /pwd/lint/unhashed-fetch.nix:1:1
-error: builtins.fetchTarball without a sha256 is not supported
+error: invalid store path name when fetching URL 'file:///nonexistent/x.tar.gz': name 'a b' contains illegal character ' '. Please change the value for the 'name' attribute passed to 'fetchTarball', so that it can create a valid store path.
        at /pwd/lint/unhashed-fetch.nix:1:1
        … while calling the 'fetchTarball' builtin at /pwd/lint/unhashed-fetch.nix:1:1
        … while calling the 'importRaw' builtin

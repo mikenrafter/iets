@@ -5,7 +5,9 @@
 //! running `nix` once (`git`, `hg`). Only that last step needs a daemon.
 //!
 //! The `narHash` is known before the fetch, so the tree names itself and the
-//! input store refuses anything that does not hash to it.
+//! input store refuses anything that does not hash to it. An unlocked
+//! `tarball` or `file` input (`unlocked`) is the one exception: it is hashed
+//! after the download, and that hash names it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -425,29 +427,51 @@ pub fn store_commit(
         root.dir(dirs).0.insert(last.to_vec(), Built::Leaf(node));
     }
     let tree = spool::Tree::spooled(file, root.node());
+    let hash = nar_hash(&tree).map_err(|e| fail(e.to_string()))?;
+    let sp = keep(ev, name, &hash, tree, treestore::stage, "a Git tree", pos)?;
+    Ok((sp, hash))
+}
+
+fn nar_hash(tree: &spool::Tree) -> io::Result<Hash> {
     let mut h = Hasher::new(HashAlgo::Sha256);
-    tree.dump(&mut h).map_err(|e| fail(e.to_string()))?;
-    let hash = h.finish();
-    let sp = treestore::store_path(name, &hash).map_err(|e| fail(e.to_string()))?;
+    tree.dump(&mut h)?;
+    Ok(h.finish())
+}
+
+/// The tree `hash` names under `name`, readable there when this returns:
+/// `/nix/store` when it holds the tree, else the input store, which takes it
+/// in, into the directory `stage` gives, when it does not have it. For a
+/// tree that nothing named before it was hashed.
+fn keep(
+    ev: &mut Evaluator,
+    name: &str,
+    hash: &Hash,
+    tree: spool::Tree,
+    stage: impl FnOnce(&str) -> Option<treestore::Staged>,
+    what: &str,
+    pos: Pos,
+) -> EvalResult<StorePath> {
+    let fail = |e: String| Error::boxed(ErrorKind::Io, e, pos);
+    let sp = treestore::store_path(name, hash).map_err(|e| fail(e.to_string()))?;
     ev.known.lock().entry(sp.clone()).or_default();
-    if valid_in_store(ev, &sp, IngestionMethod::Recursive, &hash) {
-        return Ok((sp, hash));
+    if valid_in_store(ev, &sp, IngestionMethod::Recursive, hash) {
+        return Ok(sp);
     }
     let entry = match treestore::get(sp.base_name()) {
         Some(entry) => entry,
         None => {
-            let staged = treestore::stage(sp.base_name())
-                .ok_or_else(|| fail("iets has no cache directory to hold a Git tree".into()))?;
-            treestore::put(name, IngestionMethod::Recursive, &hash, staged, tree).map_err(|e| {
+            let staged = stage(sp.base_name())
+                .ok_or_else(|| fail(format!("iets has no cache directory to hold {what}")))?;
+            treestore::put(name, IngestionMethod::Recursive, hash, staged, tree).map_err(|e| {
                 match e {
                     Rejected::Io(e) => fail(e.to_string()),
-                    _ => fail("iets cannot keep a Git tree in the input store".into()),
+                    _ => fail(format!("iets cannot keep {what} in the input store")),
                 }
             })?
         }
     };
     adopt(ev, &sp, &entry);
-    Ok((sp, hash))
+    Ok(sp)
 }
 
 /// tarball.cc:downloadFile for `builtins.fetchurl`: the bytes `url` serves, as
@@ -657,21 +681,8 @@ fn fetch_download(
             "iets: cannot fetch input '{name}': no cache directory to hold it"
         ))
     })?;
-    let mut spool = spool::spool_file(staged.dir())
-        .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
-    let limits = Limits::new(nix_conf(ev.session()))
-        .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
-    let file = str_attr(attrs, "type") == Some("file");
-    let got = match file {
-        true => http::get(&url, &headers, limits, false, &mut spool),
-        false => http::get_decompressed(&url, &headers, limits, &mut spool),
-    };
-    got.map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
-    let tree = match file {
-        true => spool::Tree::file(spool),
-        false => spool::Tree::index(spool, limits.max_size),
-    }
-    .map_err(|e| fail(format!("iets: cannot unpack input '{name}': {e}")))?;
+    let tree = download(ev, &url, &headers, attrs, &staged)
+        .map_err(|(verb, e)| fail(format!("iets: cannot {verb} input '{name}': {e}")))?;
 
     // the store verifies the tree against the lock's hash and names it by
     // what it hashes to, so a wrong tree is never named, read or uploaded
@@ -701,6 +712,74 @@ fn fetch_download(
         Rejected::Unstorable => fail(format!(
             "iets: cannot keep the fetched input '{name}' in the input store"
         )),
+    })
+}
+
+/// The download `fetch_download` and `unlocked` share, into a spool in
+/// `staged`: an archive is unpacked as Nix unpacks it, a `file` input is the
+/// one regular file. An error says whether the fetch or the unpack failed.
+fn download(
+    ev: &Evaluator,
+    url: &str,
+    headers: &[(String, String)],
+    attrs: &Attrs,
+    staged: &treestore::Staged,
+) -> result::Result<spool::Tree, (&'static str, String)> {
+    let fetch = |e: &dyn std::fmt::Display| ("fetch", e.to_string());
+    let mut spool = spool::spool_file(staged.dir()).map_err(|e| fetch(&e))?;
+    let limits = Limits::new(nix_conf(ev.session())).map_err(|e| fetch(&e))?;
+    let file = str_attr(attrs, "type") == Some("file");
+    let got = match file {
+        true => http::get(url, headers, limits, false, &mut spool),
+        false => http::get_decompressed(url, headers, limits, &mut spool),
+    };
+    got.map_err(|e| fetch(&e))?;
+    match file {
+        true => spool::Tree::file(spool),
+        false => spool::Tree::index(spool, limits.max_size),
+    }
+    .map_err(|e| ("unpack", e.to_string()))
+}
+
+/// fetchTree.cc and tarball.cc for a `tarball` or `file` input without a
+/// `narHash`, which only impure evaluation fetches: one download, hashed
+/// first since nothing names it before, then kept like a locked tree under
+/// `name`. Nix keeps the answer for a URL for `tarball-ttl`; iets looks
+/// nothing up by URL, so every call downloads and the run is uncacheable
+/// (docs/explanation/caching.md).
+pub fn unlocked(ev: &mut Evaluator, attrs: &Attrs, name: &str, pos: Pos) -> EvalResult<Tree> {
+    ev.trace().mark_uncacheable();
+    let shown = to_url(attrs);
+    let fail = |e: String| Error::boxed(ErrorKind::Eval, e, pos);
+    let (url, headers) = tarball_url(nix_conf(ev.session()), attrs)
+        .map_err(|e| fail(format!("iets: cannot fetch input '{shown}': {e}")))?;
+    let staged = treestore::stage(name).ok_or_else(|| {
+        fail(format!(
+            "iets: cannot fetch input '{shown}': no cache directory to hold it"
+        ))
+    })?;
+    let tree = download(ev, &url, &headers, attrs, &staged)
+        .map_err(|(verb, e)| fail(format!("iets: cannot {verb} input '{shown}': {e}")))?;
+    let hash = nar_hash(&tree).map_err(|e| {
+        fail(format!(
+            "iets: cannot hash the tree of input '{shown}': {e}"
+        ))
+    })?;
+    let last_modified = tree.last_modified();
+    let what = format!("input '{shown}'");
+    let path = keep(ev, name, &hash, tree, |_| Some(staged), &what, pos)?;
+    let mut attrs = attrs.clone();
+    attrs.insert("narHash".into(), AttrVal::Str(hash.to_sri()));
+    if last_modified > 0 {
+        attrs
+            .entry("lastModified".into())
+            .or_insert(AttrVal::Int(last_modified));
+    }
+    Ok(Tree {
+        path,
+        attrs,
+        subdir: String::new(),
+        counter: None,
     })
 }
 

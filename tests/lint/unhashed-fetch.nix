@@ -1,1 +1,1 @@
-builtins.fetchTarball "https://example.com/x.tar.gz"
+builtins.fetchTarball { url = "file:///nonexistent/x.tar.gz"; name = "a b"; }

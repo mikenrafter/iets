@@ -145,6 +145,9 @@ the input says `flake = false` and the URL does not end in an archive
 extension (`.zip`, `.tar`, `.tgz`, `.tar.gz`, `.tar.xz`, `.tar.bz2`,
 `.tar.zst`); otherwise it is a `tarball`. Bytes whose NAR hash is not the
 lock's are refused with Nix's `NAR hash mismatch in input` and are not kept.
+`fetchTree` of a `tarball` or `file` input without a `narHash`, which only
+impure evaluation allows, is the same one download, hashed afterwards to name
+its store path (`docs/reference/divergences.md`, "Network fetchers").
 
 With `IETS_OFFLINE=1`, any download is an error that names the URL. A flake
 whose inputs are all in the input store still evaluates.

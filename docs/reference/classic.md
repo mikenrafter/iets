@@ -429,11 +429,13 @@ A name falls back in these cases:
    - `fetchMercurial` and `fetchClosure`;
    - `fetchGit` of an SCP-like URL (`user@host:path`) without a `rev` in
      pure evaluation;
-   - `fetchTarball` and `fetchurl` without a `sha256`;
+   - `fetchurl` without a `sha256`, and `fetchTarball` with an empty one
+     or one iets cannot read;
    - `fetchTree` with a URL string, with an input type other than `path`,
-     `github`, `gitlab`, `sourcehut`, `git`, `tarball` or `hg`, or without
-     a `narHash` for a type other than `path`, or, in pure evaluation,
-     without a `rev` for a type other than `path` and `tarball`;
+     `github`, `gitlab`, `sourcehut`, `git`, `tarball`, `file` or `hg`, or
+     without a `narHash` for a type other than `path`, `tarball` and `file`,
+     or, in pure evaluation, without a `rev` for a type other than `path`,
+     `tarball` and `file`;
    - `getFlake` on anything but a local path, or on a reference with a
      `rev` or a `narHash` in pure evaluation;
    - a flake reference iets does not parse (`hg+…`, `sourcehut:`, an

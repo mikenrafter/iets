@@ -304,7 +304,7 @@ are part of the IR cache key and their warnings are stored in the entry;
 | `eq-function` | coerce | evaluator | off | `==` or `!=` with a function on either side |
 | `or-non-attrs` | coerce | evaluator | off | `x.a or d` where the subject of some element is not an attrset |
 | `impure-builtin` | purity | evaluator, compiler | off | a `getEnv` call (evaluator); a reference to `currentTime` (compiler: the value is a thunk of the globals, without a position of its own) |
-| `unhashed-fetch` | purity | evaluator | off | `fetchurl`, `fetchTarball`, `fetchGit` or `fetchTree` called with a URL string, or an attrset without `sha256`, `hash`, `narHash`, `outputHash` or `rev`; fires before the call errors |
+| `unhashed-fetch` | purity | evaluator | off | `fetchurl`, `fetchTarball`, `fetchGit` or `fetchTree` called with a URL string, or an attrset without `sha256`, `hash`, `narHash`, `outputHash` or `rev`; fires before the call runs |
 | `ifd` | purity | evaluator | off | `import` of a string whose context names a derivation |
 | `fod` | purity | evaluator | off | `derivationStrict` producing a fixed-output derivation; the message names the derivation, the hash mode and algorithm |
 | `large-source-copy` | purity | evaluator | off | a recursive path copy whose NAR (after filters) exceeds `max-bytes` |

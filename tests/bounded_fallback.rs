@@ -346,16 +346,35 @@ fn an_unlocked_tarball_is_one_bounded_fetch() {
         format!(r#"builtins.fetchTree {{ type = "tarball"; url = "{url}"; }}"#),
         format!(r#"builtins.fetchTarball "{url}""#),
     ] {
-        let path = format!("({call}).outPath");
+        // `fetchTarball` gives the path itself, `fetchTree` a set with `outPath`
+        let path = format!(r#""${{{call}}}""#);
         let file = format!(r#"builtins.readFile "${{{call}}}/sub/data""#);
         assert_eq!(raw(&cache, &path), TARBALL_PATH, "{call}");
         assert_eq!(raw(&cache, &file), "nested\n", "{call}");
+        // Nix puts `fetchTree` in `builtins` only with `flakes` (or `fetch-tree`)
         let o = classic_no_fallback(
             &cache,
-            &["nix", "eval", "--impure", "--raw", "--expr", &file],
+            &[
+                "nix",
+                "eval",
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "--impure",
+                "--raw",
+                "--expr",
+                &file,
+            ],
         );
         assert_eq!(ok(&o), "nested\n", "{call}");
     }
+    // fetchTree also says what it fetched, as Nix does: the NAR hash and the
+    // newest member's mtime
+    let tree = format!(r#"builtins.fetchTree {{ type = "tarball"; url = "{url}"; }}"#);
+    let meta = format!(r#"with {tree}; "${{narHash}} ${{toString lastModified}}""#);
+    assert_eq!(
+        raw(&cache, &meta),
+        "sha256-YcUVD9WE1vuI/e5YGqXcmjiPPjYDQ4r46XbeXgavYcQ= 1700000000"
+    );
     fs::remove_dir_all(&d).unwrap();
 }
 

@@ -406,6 +406,15 @@ nix. `fetchTarball` and `fetchTree` work for some inputs;
 - A hash mismatch exits with 1. Nix exits with 102.
 - A download error has iets's own text, not curl's.
 
+`builtins.fetchTarball` without a `sha256`, and `builtins.fetchTree` of a
+`tarball` or `file` input without a `narHash`, work in impure evaluation and
+give Nix's store path and attributes. Pure evaluation refuses them with Nix's
+error. Nix keeps what a URL gave for `tarball-ttl` (an hour by default) and
+answers from that; iets downloads on every call, hashes what it got and keeps
+it under the store path that hash names. A run that makes such a call is
+never cached (`docs/explanation/caching.md`), since nothing iets could check
+later says whether the URL still serves the same bytes.
+
 `builtins.fetchGit` copies a local working tree without a `ref` or a `rev`
 itself. It also reads a commit of a local repository by `rev` or `ref`
 itself, without `submodules`. Every other fetch runs the real `nix`, which

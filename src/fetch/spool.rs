@@ -110,6 +110,8 @@ impl Node {
 pub struct Tree {
     src: Source,
     root: Node,
+    /// The newest member's mtime, for a tree unpacked from a tar; else 0.
+    last_modified: u64,
 }
 
 #[derive(Debug)]
@@ -244,6 +246,7 @@ impl Tree {
         let mut links: BTreeMap<Parts, Parts> = Default::default();
         let mut sparse: Option<File> = None;
         let mut sparse_at = 0u64;
+        let mut last_modified = 0;
         let mut room = max_size.saturating_sub(
             spool
                 .metadata()
@@ -266,6 +269,8 @@ impl Tree {
                 if kind.is_pax_global_extensions() {
                     continue;
                 }
+                // tarfile.cc:unpackTarfileToSink, over every member
+                last_modified = last_modified.max(entry.header().mtime().unwrap_or(0));
                 let pax = pax_sparse(&mut entry)?;
                 let name = member_name(&pax, &entry)?;
                 let parts = parts_of(&unpack::member_path(&name));
@@ -360,6 +365,7 @@ impl Tree {
         Ok(Tree {
             src: Source::Spool { spool, sparse },
             root: Node::Dir(dereference(root)),
+            last_modified,
         })
     }
 
@@ -383,6 +389,7 @@ impl Tree {
                 },
                 exec: false,
             },
+            last_modified: 0,
         })
     }
 
@@ -405,6 +412,7 @@ impl Tree {
                 sparse: None,
             },
             root,
+            last_modified: 0,
         }
     }
 
@@ -412,7 +420,14 @@ impl Tree {
         Tree {
             src: Source::Packs(packs),
             root,
+            last_modified: 0,
         }
+    }
+
+    /// The newest member's mtime when the tree was unpacked from a tar
+    /// (tarball.cc puts it in `lastModified`), else 0.
+    pub fn last_modified(&self) -> u64 {
+        self.last_modified
     }
 
     /// Every file's blob, once: a hard link shares its target's.
