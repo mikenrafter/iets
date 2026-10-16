@@ -319,11 +319,13 @@ Each Nix setting falls in a class for iets. Other pages refer to the numbers.
 
 | Setting | Effect |
 |:---|:---|
-| `store` | the last fallback for `builder` |
+| `store` | the last fallback for `builder`; the store an import from derivation builds in, which must be a daemon on this machine (`docs/reference/divergences.md`) |
 | `system` | `builtins.currentSystem` under the classic names; the `system=` default of a `grpc://` URL. iets's own commands use the system iets was built for |
 | `pure-eval` | see **`pure-eval`** |
 | `nix-path` | the search path after `-I`, when `NIX_PATH` is not in the environment. `--option nix-path` replaces `NIX_PATH`, and `--option extra-nix-path` adds to it, as in Nix (`configuration.cc:192`). Nix's channel defaults are not applied |
 | `show-trace` | the same as `--show-trace` |
+| `allow-import-from-derivation` | `false` refuses an import from derivation with Nix's error, even when the output is already valid, as in Nix |
+| `trace-import-from-derivation` | `true` gives Nix's warning `built '<drv>^out' during evaluation due to an import from derivation` |
 | `json-log-path` | `docs/reference/errors.md` |
 | `access-tokens`, `connect-timeout`, `stalled-download-timeout` | the flake input fetcher. The timeouts default to 15 s and 300 s; 0 is no limit, as in `filetransfer.hh`. `--option` reaches the fetcher too: the session keeps the settings of the first load |
 | `bash-prompt`, `bash-prompt-prefix`, `bash-prompt-suffix` | `nix develop` |
@@ -366,7 +368,6 @@ its URL has 'max-builds'`. `store` and `system` still apply.
 
 | Setting | Why it holds |
 |:---|:---|
-| `allow-import-from-derivation`, `trace-import-from-derivation` | iets never builds during evaluation. An import from derivation is an error in iets's own commands, and a fallback under a classic name, where the real nix applies the setting. |
 | `eval-cache` | iets has no Nix evaluation cache. Its own caches check every input they read, and `--no-cache` turns them off. |
 | `warn-dirty`, `allow-dirty-locks`, `commit-lock-file-summary` | iets prints no dirty-tree warning and writes no lock file. |
 | `flake-registry`, `use-registries` | iets has no registry. A reference that needs one falls back, or is an error in iets's own commands. |

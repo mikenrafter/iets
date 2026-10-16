@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use crate::cli::{self, EvalArgs, evaluate, render, report, run_for};
-use crate::eval::{Evaluator, Pos};
+use crate::eval::{Error, ErrorKind, Evaluator, Pos};
 use crate::trace::run::Cache;
 use crate::trace::store::Part;
 use crate::{print, treestore};
@@ -19,23 +19,44 @@ pub fn run_eval(a: EvalArgs) -> i32 {
         render::bytes(&out);
         return 0;
     }
-    // only the cache and --dump-drvs read the ATerm text after evaluation
-    let keep = run.cache.is_some() || a.dump_drvs.is_some();
-    run.cfg = run.cfg.keep_aterm(keep).keep_site(false);
-    // parallel: the rest runs as the main fiber
-    cli::run_parallel(run, move |ev, cache| eval_and_print(ev, a, cache))
+    // only the cache and --dump-drvs read the ATerm text after evaluation,
+    // and an import from derivation that uploads a derivation: a run that
+    // dropped one evaluates again keeping them (docs/reference/divergences.md)
+    let mut keep = run.cache.is_some() || a.dump_drvs.is_some();
+    loop {
+        run.cfg = run.cfg.keep_aterm(keep).keep_site(false);
+        let args = a.clone();
+        // parallel: the rest runs as the main fiber
+        let again = !keep;
+        if let Some(code) =
+            cli::run_parallel(run, move |ev, cache| eval_and_print(ev, args, cache, again))
+        {
+            return code;
+        }
+        keep = true;
+        run = run_for(&a).cached(&a, "eval");
+    }
 }
 
-fn eval_and_print(ev: &mut Evaluator, a: EvalArgs, cache: Option<Cache>) -> i32 {
+/// The exit code, or `None` when `again` and an import from derivation needs
+/// a derivation text the run dropped.
+fn eval_and_print(
+    ev: &mut Evaluator,
+    a: EvalArgs,
+    cache: Option<Cache>,
+    again: bool,
+) -> Option<i32> {
     let strict = a.strict;
     let json = a.json;
     let raw = a.raw;
     let t0 = Instant::now();
     let timings = a.timings;
     let evaluating = cli::evaluating(&a);
+    let dropped = |e: &Error| again && e.kind == ErrorKind::DroppedText;
     let v = match evaluate(ev, a) {
         Ok(v) => v,
-        Err(e) => return report(ev, &e),
+        Err(e) if dropped(&e) => return None,
+        Err(e) => return Some(report(ev, &e)),
     };
 
     let mut out: Vec<u8> = Vec::new();
@@ -83,8 +104,9 @@ fn eval_and_print(ev: &mut Evaluator, a: EvalArgs, cache: Option<Cache>) -> i32 
             if let Some(c) = &cache {
                 c.write(ev, &out, false);
             }
-            0
+            Some(0)
         }
-        Err(e) => report(ev, &e),
+        Err(e) if dropped(&e) => None,
+        Err(e) => Some(report(ev, &e)),
     }
 }

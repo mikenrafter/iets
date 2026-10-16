@@ -20,6 +20,7 @@ pub mod event;
 pub mod executor;
 pub mod fanout;
 pub mod fixhash;
+pub mod ifd;
 pub mod render;
 pub mod upload;
 

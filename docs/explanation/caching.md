@@ -147,7 +147,7 @@ Every primop that looks at the world records one observation.
 |---|---|---|
 | a file's size, mtime, ctime, device, inode and sha256 | `import`, `readFile`, `hashFile`, every `.drv` read | `lstat`; on a stat mismatch the file is rehashed and accepted if the hash matches |
 | a directory listing's hash | `readDir` | re-list and rehash |
-| a path's kind | `pathExists`, `readFileType`, the `default.nix` probe, every search-path candidate, every marker the SCM detection probed above a flake directory, a fetched store path that the store has as valid | re-stat |
+| a path's kind | `pathExists`, `readFileType`, the `default.nix` probe, every search-path candidate, every marker the SCM detection probed above a flake directory, a fetched store path that the store has as valid, the output an import from derivation built or found valid | re-stat |
 | a copied tree's NAR hash and stat hash | `./path` coerced to a string, `builtins.path`, `filterSource`, a flake's working tree, a `path:` input | recompute the stat hash with `lstat` only; on a mismatch re-dump the NAR with the recorded filter and compare. A `path:` input also records its newest mtime, which the evaluation sees as `lastModified`, and the same bytes with another date are a change |
 | a resolved symlink | `storePath`, `builtins.path` and `filterSource` when canonicalizing changed the path | canonicalize again |
 | an environment variable, as a keyed hash | `getEnv`; `HOME` when a `~/` literal is compiled | read it again and hash it again |
@@ -191,6 +191,12 @@ A fetch records the kind of its store path only after it checked that the
 path is valid. A hit only stats the path again and asks no daemon: a valid
 path does not change, and the garbage collector deletes what it
 invalidates.
+
+An import from derivation is the same observation. The output is recorded
+after the daemon built it or answered that it was valid, so a run that
+imported from a derivation is cached like any other. A hit stats the output
+and builds nothing. Once the output is collected or deleted, the stat is a
+mismatch, and the next run evaluates and builds it again.
 
 The read set has a second reader. `iets cache paths ENTRY` prints the paths
 in it that a file watcher can use, and `nix/direnvrc` turns them into direnv
@@ -439,7 +445,8 @@ bytes is a new date.
 The input store holds trees whose content address is a flake `narHash`. It
 doesn't hold a substitutable-but-absent `/nix/store` path: `builtins.storePath`
 hands such a path to the daemon, which substitutes it before any read, and
-import-from-derivation is unsupported. `git` and `hg` inputs need a
+the output of an import from derivation is built by the daemon into
+`/nix/store`. `git` and `hg` inputs need a
 repository, which iets cannot clone, so they go through a real `nix` that
 writes `/nix/store`. The NAR hash of a source tree has no store of its own,
 because the tracing cache's tree observation already holds it.

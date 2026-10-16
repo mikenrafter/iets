@@ -3,17 +3,18 @@
 //! is `<name>.warn.exp`, and at `error` it fails with `error: [<name>]`.
 
 use super::*;
-use crate::api::testkit::eval;
+use crate::api::testkit::eval_with;
 use crate::api::{EvalArgs, Input};
 
 fn lint_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lint")
 }
 
-/// The fixture's own `--lint` and `--impure` flags, then `extra`.
-fn args(name: &str, extra: Option<(&str, Level)>) -> EvalArgs {
+/// The fixture's own `--lint`, `--impure` and `--option` flags, then `extra`.
+fn eval(name: &str, extra: Option<(&str, Level)>) -> (String, i32, String) {
     let dir = lint_dir();
     let mut a = EvalArgs::new();
+    let mut options = Vec::new();
     a.input = Some(Input::File(
         dir.join(format!("{name}.nix")).display().to_string(),
     ));
@@ -30,12 +31,16 @@ fn args(name: &str, extra: Option<(&str, Level)>) -> EvalArgs {
                     let (n, l) = spec.split_once('=').expect("NAME=LEVEL");
                     a.lints.push((n.into(), Level::parse(l).expect("a level")));
                 }
+                "--option" => {
+                    let mut next = || it.next().expect("--option takes NAME VALUE").to_string();
+                    options.push((next(), next()));
+                }
                 _ => panic!("{name}.flags: unknown flag {f}"),
             }
         }
     }
     a.lints.extend(extra.map(|(n, l)| (n.to_string(), l)));
-    a
+    eval_with(a, &options)
 }
 
 fn fixtures() -> Vec<String> {
@@ -53,7 +58,7 @@ fn fixtures() -> Vec<String> {
 /// What is wrong with one fixture, if anything.
 fn check(name: &str) -> Option<String> {
     let dir = lint_dir();
-    let (_, _, quiet) = eval(args(name, None));
+    let (_, _, quiet) = eval(name, None);
     let own = format!("warning: [{name}]");
     if quiet
         .lines()
@@ -61,7 +66,7 @@ fn check(name: &str) -> Option<String> {
     {
         return Some("fires at the default level".into());
     }
-    let (_, _, warn) = eval(args(name, Some((name, Level::Warn))));
+    let (_, _, warn) = eval(name, Some((name, Level::Warn)));
     if !warn.contains(&own) {
         return Some("does not fire at warn".into());
     }
@@ -71,7 +76,7 @@ fn check(name: &str) -> Option<String> {
     if warn.trim_end() != exp.trim_end() {
         return Some(format!("stderr differs from {name}.warn.exp:\n{warn}"));
     }
-    let (_, rc, err) = eval(args(name, Some((name, Level::Error))));
+    let (_, rc, err) = eval(name, Some((name, Level::Error)));
     let first = err.lines().next().unwrap_or_default();
     if rc != 1 || !first.starts_with(&format!("error: [{name}]")) {
         return Some(format!("error run: rc={rc}, first line {first:?}"));

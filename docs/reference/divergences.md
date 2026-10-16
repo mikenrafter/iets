@@ -426,13 +426,32 @@ the revision without the real nix.
 
 ## Import from derivation
 
-iets never builds during evaluation. Reading a path whose string context
-names a derivation output (`import`, `readFile`, `pathExists` and the other
-builtins that read a file) fails, even when the output is already in the
-store. Nix builds the derivation first, unless
-`allow-import-from-derivation` is off. Under a classic name iets falls back
-to the real nix, which applies that setting (`docs/reference/settings.md`).
-You can still `import` a `.drv` file.
+Reading a path whose string context names a derivation output (`import`,
+`readFile`, `pathExists` and the other builtins that read a file) builds that
+output first, as in Nix, and the evaluation goes on in iets: no command falls
+back to the real nix for it. iets uploads what the store lacks of the
+derivation's closure, sends one `BuildPathsWithResults`, and reads the output
+from `/nix/store`. An output the store already holds is not built again.
+`allow-import-from-derivation = false` refuses it with Nix's error, even when
+the output is valid.
+
+Three differences remain:
+
+- The build goes to the eval store, nix.conf's `store`, never to `builder`.
+  It must be a daemon on this machine, because the evaluation reads the
+  output from the local `/nix/store`. Any other store, or no daemon, is
+  `cannot build '<drv>^out' during evaluation: …`, naming the store and why.
+  iets has no local store to build in, and does not fall back.
+- `iets eval` with the tracing cache off drops each derivation's ATerm text
+  (`docs/explanation/evaluation.md`). When an import from derivation must
+  upload a derivation whose text it dropped, it evaluates once more with the
+  text kept. Output that the first evaluation printed to stderr, such as a
+  `builtins.trace`, is printed twice. `eval-jobs --no-instantiate` drops the
+  text too, and gives the error instead.
+- The output of a dynamic derivation (`builtins.outputOf`) cannot be
+  imported. Under a classic name that falls back to the real nix.
+
+The build uses the daemon's own `max-jobs` and `cores`.
 
 ## An all-digit name in an `eval-jobs` attribute path
 
@@ -688,7 +707,7 @@ Class 1 covers these flags:
 | `--no-gc-warning` on `nix-build`, `nix-shell` | Only `nix-instantiate` prints that warning. `nix-instantiate` implements the flag. |
 | `--no-location` | It changes `--xml` output only, and `--xml` falls back. |
 | `--readonly-mode` on `iets eval` | `iets eval` writes to no store. |
-| `-j`, `--cores`, `-k`, `-K` on `nix eval`, `nix-instantiate`, `nix derivation show`, `eval-jobs` | These commands build nothing: iets never builds during evaluation. The building commands send the four values to the daemon. |
+| `-j`, `--cores`, `-k`, `-K` on `nix eval`, `nix-instantiate`, `nix derivation show`, `eval-jobs` | These commands build only an import from derivation, which takes the daemon's own settings ("Import from derivation"). The building commands send the four values to the daemon. |
 | `--experimental-features`, `--extra-experimental-features` | Every feature is always on (see "Experimental-feature builtins"). `parse-toml-timestamps` is the exception: `iets eval` applies it, and a classic `nix` falls back. |
 | `--show-trace`, `--log-format bar` | iets always prints the full trace, and renders builds its own way; `docs/reference/classic.md` lists both. |
 

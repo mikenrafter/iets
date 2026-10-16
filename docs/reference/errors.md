@@ -51,6 +51,8 @@ dash means the code has no kind of its own.
 | `io` | `ErrorKind::Io`, `Error::Io` | a file that cannot be read or written |
 | `unsupported` | `ErrorKind::Unsupported`, `Error::Unsupported` | a feature iets does not have; classic mode falls back to Nix |
 | `cancelled` | `ErrorKind::Cancelled` | a parallel helper was stopped; never reaches the user |
+| `dropped-text` | `ErrorKind::DroppedText` | an import from derivation must upload a derivation whose ATerm text this run dropped; `iets eval` evaluates again keeping it, `eval-jobs --no-instantiate` reports it |
+| `import-from-derivation` | — | a level-1 record: `trace-import-from-derivation` is on and the evaluation built a derivation output |
 | `usage` | `Error::Usage` | a bad command line |
 | `config` | `Error::Config` | a bad `nix.conf` or iets setting |
 | `store` | `Error::Store` | a bad store path, derivation or hash |

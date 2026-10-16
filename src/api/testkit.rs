@@ -3,6 +3,7 @@
 
 use crate::api::run::Run;
 use crate::api::{self, EvalArgs};
+use crate::config::Config;
 use crate::env::Env;
 use crate::print;
 use crate::session::Session;
@@ -11,7 +12,17 @@ use std::collections::HashSet;
 
 /// One evaluation as `iets eval` does it: stdout, exit code and stderr.
 pub fn eval(a: EvalArgs) -> (String, i32, String) {
+    eval_with(a, &[])
+}
+
+/// [`eval`] with nix.conf settings, as `--option NAME VALUE` gives them.
+pub fn eval_with(a: EvalArgs, options: &[(String, String)]) -> (String, i32, String) {
     let session = Session::with_env(Env::isolated());
+    let mut conf = Config::empty();
+    for (name, value) in options {
+        conf.set(name, value);
+    }
+    let _ = session.nix_conf.set(conf);
     let log = Sink::default();
     session.log.write_to(Box::new(log.clone()));
     let _entered = session.enter();

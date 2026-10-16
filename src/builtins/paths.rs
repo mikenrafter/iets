@@ -17,6 +17,7 @@ use std::sync::Arc;
 use super::Registry;
 use super::store_hooks::{self, At, Follow};
 use super::{fetch, fetch_git};
+use crate::build::ifd::{self, Refused};
 use crate::compile::canon_path;
 use crate::eval::{Error, ErrorKind, EvalResult, Evaluator, Pos, bail};
 use crate::flake::{self, flakeref};
@@ -177,11 +178,11 @@ pub fn coerce_to_path(
     Ok(canon_path(&s))
 }
 
-/// Nix's `realisePath` without building: a path with a derivation output in
-/// its context cannot be realised here, and an opaque store path or `.drv`
-/// (primops.cc:realiseContext treats `DrvDeep` as opaque) must exist or be
-/// one this evaluation made. The result is the path as Nix names it;
-/// `store_hooks::locate` gives the file to read.
+/// Nix's `realisePath`: an opaque store path or `.drv` (primops.cc:realiseContext
+/// treats `DrvDeep` as opaque) must exist or be one this evaluation made, and
+/// a derivation output in its context is built first ([`realise_built`]). The
+/// result is the path as Nix names it; `store_hooks::locate` gives the file to
+/// read.
 pub fn realise_path(ev: &mut Evaluator, w: Word, pos: Pos) -> EvalResult<Vec<u8>> {
     let mut ctx = Vec::new();
     let p = coerce_to_path(
@@ -191,6 +192,7 @@ pub fn realise_path(ev: &mut Evaluator, w: Word, pos: Pos) -> EvalResult<Vec<u8>
         Pos::NONE,
         "while realising the context of a path",
     )?;
+    let mut built = Vec::new();
     for c in &ctx {
         let mut kind = ErrorKind::Eval;
         let msg = match c {
@@ -213,22 +215,99 @@ pub fn realise_path(ev: &mut Evaluator, w: Word, pos: Pos) -> EvalResult<Vec<u8>
                     format!("path '{}' is not valid", lossy(sp))
                 }
             }
-            Ctx::Built { drv: d, .. } => {
-                kind = ErrorKind::Unsupported;
-                format!(
-                    "import from derivation is not supported: '{}' is not built",
-                    lossy(d)
-                )
+            Ctx::Built { drv, output } => {
+                built.push((*drv, *output));
+                continue;
             }
         };
-        let mut e = Error::new(kind, msg, pos);
-        e.add_trace(
-            pos,
-            format!("while realising the context of path '{}'", lossy(&p)),
-        );
-        return Err(Box::new(e));
+        return Err(realising(Error::new(kind, msg, pos), &p, pos));
+    }
+    if !built.is_empty() {
+        realise_built(ev, &built, pos).map_err(|e| realising(e, &p, pos))?;
     }
     Ok(p)
+}
+
+fn realising(mut e: Error, p: &[u8], pos: Pos) -> Box<Error> {
+    e.add_trace(
+        pos,
+        format!("while realising the context of path '{}'", lossy(p)),
+    );
+    Box::new(e)
+}
+
+/// A derivation output as Nix's `SingleDerivedPath::to_string` names it:
+/// `/nix/store/x.drv^out`, one `^<output>` per layer of dynamic derivation.
+fn derived_name(drv: &[u8], output: &[u8]) -> String {
+    let (layers, root) = runtime::split_built(drv);
+    let mut s = lossy(root).into_owned();
+    for l in layers.iter().rev() {
+        s.push('^');
+        s.push_str(&lossy(l));
+    }
+    s.push('^');
+    s.push_str(&lossy(output));
+    s
+}
+
+/// primops.cc:realiseContext for the derivation outputs of a context: refused
+/// when `allow-import-from-derivation` is off, else built in the eval store
+/// (`build::ifd`). An output the store already holds costs no build. Each
+/// output's kind is an observation, as a fetched store path's is: a valid
+/// path does not change, so the tracing cache keeps the run until the output
+/// is gone (docs/explanation/caching.md).
+fn realise_built(ev: &mut Evaluator, built: &[(&[u8], &[u8])], pos: Pos) -> Result<(), Error> {
+    let setting = |name: &str, default: bool| {
+        let c = ev.session().nix_conf.get();
+        c.and_then(|c| c.bool(name).ok().flatten())
+            .unwrap_or(default)
+    };
+    let first = derived_name(built[0].0, built[0].1);
+    if !setting("allow-import-from-derivation", true) {
+        return Err(Error::new(
+            ErrorKind::Eval,
+            format!(
+                "cannot build '{first}' during evaluation because the option 'allow-import-from-derivation' is disabled"
+            ),
+            pos,
+        ));
+    }
+    let mut wanted = Vec::with_capacity(built.len());
+    for (drv, output) in built {
+        let sp = from_utf8(drv).ok().and_then(|d| StorePath::parse(d).ok());
+        let Some(sp) = sp else {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!(
+                    "import from the output of a dynamic derivation is not supported: '{}'",
+                    derived_name(drv, output)
+                ),
+                pos,
+            ));
+        };
+        wanted.push((sp, lossy(output).into_owned()));
+    }
+    if setting("trace-import-from-derivation", false) {
+        log::warning(
+            "import-from-derivation",
+            format!("built '{first}' during evaluation due to an import from derivation"),
+        );
+    }
+    let outs = ifd::realise(ev, &wanted, &first).map_err(|r| match r {
+        Refused::Message(m) => Error::new(ErrorKind::Eval, m, pos),
+        Refused::DroppedText(why) => Error::new(
+            ErrorKind::DroppedText,
+            format!("cannot build '{first}' during evaluation: this run did not keep the text of its derivations: {why}"),
+            pos,
+        ),
+    })?;
+    for out in outs {
+        if let Ok(sp) = StorePath::parse(&out) {
+            ev.known.lock().entry(sp).or_default();
+        }
+        ev.trace().stat_now(out.as_bytes(), true);
+    }
+    Ok(())
 }
 
 /// What a realised path reads, and the path its messages name: the file on

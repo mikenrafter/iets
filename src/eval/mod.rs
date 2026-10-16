@@ -391,7 +391,9 @@ macro_rules! bail {
 use crate::sys;
 pub(crate) use bail;
 
-pub const DEFAULT_SYSTEM: &str = "x86_64-linux";
+/// The system iets was built for, as the native commands default to
+/// (docs/reference/settings.md).
+pub const DEFAULT_SYSTEM: &str = crate::config::DEFAULT_SYSTEM;
 
 /// Everything fixed before evaluation starts. A field set after `try_run` clones
 /// the evaluator is one fiber's alone, so there is no setter (docs/explanation/evaluation.md).

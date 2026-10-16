@@ -34,13 +34,16 @@ pub enum ErrorKind {
     /// A parallel helper fiber was told to stop. Never caught.
     Cancelled,
     /// A feature iets does not implement (network fetchers, flakes without a
-    /// lock, import-from-derivation). Classic mode turns this into an exec of
+    /// lock, import from a dynamic derivation's output). Classic mode turns this into an exec of
     /// the real nix; see `crate::cli::classic`.
     Unsupported,
     /// A lint at level `error`. Never caught by `tryEval`.
     Lint,
     /// A fetched tree whose hash is not the one the lock or the call named.
     HashMismatch,
+    /// An import from derivation needs the ATerm text of a derivation this
+    /// run dropped. Never caught: `iets eval` evaluates again keeping it.
+    DroppedText,
 }
 
 impl ErrorKind {
@@ -62,6 +65,7 @@ impl ErrorKind {
             ErrorKind::Unsupported => "unsupported",
             ErrorKind::Lint => "lint",
             ErrorKind::HashMismatch => "hash-mismatch",
+            ErrorKind::DroppedText => "dropped-text",
         }
     }
 }

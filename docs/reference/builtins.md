@@ -11,9 +11,9 @@ Each row has a status:
 
 These hold for every builtin:
 
-- **No import from derivation.** If a path is the output of a derivation,
-  reading it fails, because evaluation never builds anything. You can still
-  `import` a `.drv` file.
+- **Import from derivation builds.** If a path is the output of a
+  derivation, reading it builds the output first in the local daemon's
+  store, as in Nix (`docs/reference/divergences.md`).
 - **Classic mode falls back.** When iets does not support a call, a classic
   name such as `nix-instantiate` or `nix` runs the real Nix for you
   (`docs/reference/classic.md`).

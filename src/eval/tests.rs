@@ -2,7 +2,10 @@ use std::collections::HashSet;
 
 use super::{ErrorKind, EvalConfig, Evaluator};
 
+use crate::config::Config;
+use crate::env::Env;
 use crate::print;
+use crate::session::Session;
 
 fn eval_str(src: &str) -> String {
     let mut ev = Evaluator::new();
@@ -143,8 +146,15 @@ fn derivation_wrapper_exists() {
     );
 }
 
+/// With `allow-import-from-derivation` off, every reader of a path refuses a
+/// derivation output with Nix's error before it asks any store.
 #[test]
-fn reading_a_derivation_output_is_unsupported() {
+fn reading_a_derivation_output_is_refused_when_ifd_is_off() {
+    let session = Session::with_env(Env::isolated());
+    let mut conf = Config::empty();
+    conf.set("allow-import-from-derivation", "false");
+    let _ = session.nix_conf.set(conf);
+    let _entered = session.enter();
     let drv = r#"(derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; })"#;
     for f in [
         "import",
@@ -160,9 +170,11 @@ fn reading_a_derivation_output_is_unsupported() {
             .eval_string(&format!("{f} {drv}"), b"/")
             .and_then(|v| ev.force_deep(v))
             .unwrap_err();
-        assert_eq!(
-            e.kind,
-            crate::eval::ErrorKind::Unsupported,
+        assert_eq!(e.kind, crate::eval::ErrorKind::Eval, "{f}: {}", e.msg);
+        assert!(
+            e.msg.ends_with(
+                "-x.drv^out' during evaluation because the option 'allow-import-from-derivation' is disabled"
+            ),
             "{f}: {}",
             e.msg
         );

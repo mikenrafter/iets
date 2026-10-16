@@ -83,6 +83,12 @@ impl DrvState {
         }
     }
 
+    /// Whether this run keeps each derivation's ATerm text
+    /// (`EvalConfig::keep_aterm`).
+    pub fn keeps_aterm(&self) -> bool {
+        self.keep_aterm
+    }
+
     /// The three settings of `eval::EvalConfig`.
     pub(crate) fn new(keep_aterm: bool, keep_site: bool, dump_dir: Option<PathBuf>) -> DrvState {
         DrvState {

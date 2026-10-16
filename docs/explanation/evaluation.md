@@ -126,7 +126,10 @@ the bytes instead of by their hash cost 6 % and 12 %, so the hash stayed.
 ## ATerm text
 
 A derivation's ATerm text is kept only for the runs that read it back:
-instantiation, the tracing cache, `build` and `print-dev-env`. Everything
+instantiation, the tracing cache, `build` and `print-dev-env`. An import from
+derivation reads it back too, to upload what the store lacks; an `iets eval`
+that dropped it evaluates once more keeping it, which costs only the rare run
+that imports from a derivation the store does not have. Everything
 else handles a derivation with no ATerm, which is also the state of a
 derivation read from `/nix/store`. It was 331 MB of heap on outpaths, and
 dropping it took peak RSS from 7,680 MB to 7,219 MB.
