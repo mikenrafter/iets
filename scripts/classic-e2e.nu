@@ -726,13 +726,18 @@ in { aDrv = a.drvPath; bDrv = b.drvPath; aOut = a.outPath; bOut = b.outPath; }
     (run-both $farm nix eval --raw --expr $"builtins.readFile \(builtins.fetchTarball { url = \"file://($tmp)/x.tar.gz\"; sha256 = \"($tb_hash)\"; name = \"leftover-tree\"; } + \"/f\"\)")))
 
   let ifd = $"import \(derivation { name = \"x\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [\"-c\" \"echo 42 > $out\"]; })"
-  $ok = ($ok | append (cmp-case "import from derivation falls back"
+  $ok = ($ok | append (cmp-case "import from derivation under nix-instantiate"
     (run-both $farm nix-instantiate --eval -E $ifd)))
+  # the output is realised through the daemon and the evaluation goes on in
+  # iets: no whole-command fallback
+  let nofb = (with-env {IETS_NO_FALLBACK: "1"} { ^$"($farm)/nix-instantiate" --eval -E $ifd | complete })
+  $ok = ($ok | append (verdict ($nofb.exit_code == 0 and $nofb.stdout == "42\n" and not ($nofb.stderr | str contains "falling back"))
+    "import from derivation does not fall back" $"exit ($nofb.exit_code), stdout '($nofb.stdout)', stderr '($nofb.stderr)'"))
   # --impure: the expression names `builtins.currentSystem`, which a pure
-  # evaluation has not got, and the point here is the IFD refusal
+  # evaluation has not got
   let r = (^$iets eval --impure -E $ifd | complete)
-  $ok = ($ok | append (verdict ($r.exit_code == 1 and ($r.stderr | str contains "import from derivation is not supported"))
-    "iets eval refuses import from derivation" $"exit ($r.exit_code), stderr '($r.stderr)'"))
+  $ok = ($ok | append (verdict ($r.exit_code == 0 and ($r.stdout | str trim) == "42")
+    "iets eval imports from derivation" $"exit ($r.exit_code), stdout '($r.stdout)', stderr '($r.stderr)'"))
 
   # --- a file name that is not UTF-8
   let ff = $"($tmp)/ff"
